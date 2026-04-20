@@ -672,3 +672,391 @@ A: New pods are brought up gradually while old pods are taken down. Users always
 
 **Q: What is the benefit of tagging Docker images with build numbers instead of `latest`?**
 A: `latest` always gets overwritten. Build number tags are immutable — you can deploy any specific version and roll back instantly if something breaks in production.
+
+---
+
+## Git Commands Explained
+
+**Q: What is `git config pull.rebase false` and why do we need it?**
+
+A: When you run `git pull`, git needs to know HOW to combine the remote commits with your local commits. There are two strategies — merge or rebase. Git doesn't pick one by default and throws an error asking you to choose.
+
+`git config pull.rebase false` tells git — use merge strategy when pulling. This is the safe and simple choice.
+
+Without this config git throws this error:
+```
+fatal: Need to specify how to reconcile divergent branches.
+```
+
+You only need to run this once. Git saves it in your local config and remembers it forever.
+
+The three options git gives you:
+```
+git config pull.rebase false   # merge  — safe, keeps full history
+git config pull.rebase true    # rebase — cleaner history, rewrites commits
+git config pull.ff only        # fast-forward only — strictest, fails if branches diverged
+```
+For beginners and teams — always use `pull.rebase false`.
+
+---
+
+**Q: What is `--allow-unrelated-histories` in git pull?**
+
+A: Normally git refuses to merge two branches that have no common starting point. This happens when:
+- You created a repo on GitHub with a README
+- You created a separate local project
+- They were never connected — git sees them as completely unrelated
+
+`--allow-unrelated-histories` forces git to merge them anyway.
+
+```bash
+git pull origin main --allow-unrelated-histories
+```
+
+You only need this flag once — the first time you connect a local project to an existing GitHub repo. After that, both histories are merged and future pulls work normally.
+
+---
+
+**Q: What is `origin` in git commands?**
+
+A: `origin` is just a nickname/alias for your GitHub repo URL. Instead of typing the full URL every time, you give it a short name.
+
+```bash
+# without origin
+git push https://github.com/rashmitha26-star/Devops-Porject-Build-Rashmitha.git main
+
+# with origin — clean and short
+git push origin main
+```
+
+You set it up once with:
+```bash
+git remote add origin https://github.com/your-username/your-repo.git
+```
+
+`origin` is the default name everyone uses by convention. You could name it anything but everyone uses `origin`.
+
+---
+
+**Q: What does `git remote -v` do? What does `-v` mean?**
+
+A: `git remote -v` shows all the remotes configured for your repo and their URLs.
+`-v` means verbose — show full details, not just the name.
+
+```bash
+git remote -v
+```
+
+Output:
+```
+origin  https://github.com/rashmitha26-star/Devops-Porject-Build-Rashmitha.git (fetch)
+origin  https://github.com/rashmitha26-star/Devops-Porject-Build-Rashmitha.git (push)
+```
+
+Two lines appear — one for fetch (download) and one for push (upload). Both point to the same URL normally.
+
+---
+
+**Q: What is the difference between merge and rebase?**
+
+A: Both combine commits from two branches but in different ways.
+
+Merge — combines branches and creates a new merge commit. Full history is preserved.
+```
+GitHub:  A --- B
+Local:       C --- D
+Result:  A --- B --- C --- D --- Merge commit
+```
+
+Rebase — replays your local commits on top of remote commits. No merge commit. Cleaner history but rewrites commits.
+```
+GitHub:  A --- B
+Local:       C --- D
+Result:  A --- B --- C --- D
+```
+
+For teams — merge is safer because it never rewrites history. Rebase is used when you want a clean linear history before merging a feature branch.
+
+---
+
+**Q: What is `git branch -m master main`?**
+
+A: Renames your local branch from `master` to `main`.
+`-m` means move/rename.
+
+GitHub now uses `main` as the default branch name. Older git versions create branches as `master` by default. This command aligns your local branch name with GitHub.
+
+---
+
+**Q: What is the full git push flow from local to GitHub?**
+
+```
+git init                          — initialise a local git repo
+git add .                         — stage all files for commit
+git commit -m "message"           — save a snapshot of staged files
+git remote add origin <url>       — link your local repo to GitHub
+git branch -m master main         — rename branch to main
+git config pull.rebase false      — set merge as pull strategy
+git pull origin main              — download GitHub commits and merge
+  --allow-unrelated-histories     — needed if repo histories are unrelated
+git push origin main              — upload your commits to GitHub
+```
+
+
+---
+
+# PART 7: MOVING JENKINS TO AWS EC2 (REAL PRODUCTION SETUP)
+
+---
+
+## Why EC2 and not your local Mac?
+
+| | Your Mac | EC2 |
+|---|---|---|
+| Always on | No | Yes — 24/7 |
+| Public IP | No | Yes |
+| GitHub webhook works | No | Yes |
+| Whole team can access | No | Yes |
+| Builds while you sleep | No | Yes |
+
+Jenkins must be on a machine with a public IP so GitHub can send webhook notifications to it.
+EC2 is the standard choice when you are already using AWS (ECR + EKS).
+
+---
+
+## Public Subnet vs Private Subnet — Which to choose?
+
+Always choose PUBLIC subnet for Jenkins.
+
+| | Public Subnet | Private Subnet |
+|---|---|---|
+| Has public IP | Yes | No |
+| GitHub can reach it | Yes | No |
+| Jenkins UI accessible | Yes | No |
+| Use case | Jenkins, web servers | Databases, internal apps |
+
+Also make sure `Auto-assign public IP` is ENABLED when launching the instance.
+This is what gives EC2 a public IP that GitHub can reach.
+
+---
+
+## Step 1: Launch EC2 Instance
+
+1. Go to AWS Console → search `EC2` → click `Launch Instance`
+2. Fill in:
+   - Name: `jenkins-server`
+   - AMI: `Ubuntu Server 22.04 LTS` — 64-bit (x86)
+   - Instance type: `t2.medium` (Jenkins needs minimum 2 CPUs, 4GB RAM — t2.micro is too small)
+3. Key Pair:
+   - Click `Create new key pair`
+   - Name: `jenkins-key`
+   - Type: `RSA`
+   - Format: `.pem`
+   - Click `Create key pair` — saves `jenkins-key.pem` to your Mac — keep this safe
+4. Network Settings → click `Edit`:
+   - VPC: select your VPC
+   - Subnet: select a PUBLIC subnet
+   - Auto-assign public IP: ENABLE
+
+5. Add Security Group inbound rules:
+
+| Type | Port | Source | Why |
+|---|---|---|---|
+| SSH | 22 | My IP | SSH from your Mac only |
+| Custom TCP | 8080 | Anywhere | Jenkins UI |
+| Custom TCP | 50000 | Anywhere | Jenkins agents |
+
+6. Storage: change from 8GB to `20GB` (builds need space)
+7. Click `Launch Instance`
+8. Wait 2 minutes → Instance State shows `Running`
+9. Copy the `Public IPv4 address` — example: `54.123.45.67`
+
+---
+
+## Step 2: SSH Into EC2 From Your Mac
+
+```bash
+# go to where the key was downloaded
+cd ~/Downloads
+
+# fix key permissions — required by SSH
+chmod 400 jenkins-key.pem
+
+# connect to EC2
+ssh -i jenkins-key.pem ubuntu@<ec2-public-ip>
+```
+
+> `chmod 400` — makes the key file read-only. SSH refuses to connect if the key has open permissions.
+> You should see `ubuntu@ip-172-xx-xx-xx:~$` — you are now inside the EC2 server.
+
+---
+
+## Step 3: Install Java on EC2
+
+```bash
+sudo apt update
+sudo apt install openjdk-17-jdk -y
+java -version
+```
+
+> Jenkins is a Java application — it needs Java to run.
+
+---
+
+## Step 4: Install Jenkins on EC2
+
+```bash
+curl -fsSL https://pkg.jenkins.io/debian/jenkins.io-2023.key | sudo tee \
+  /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+
+echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+  https://pkg.jenkins.io/debian binary/ | sudo tee \
+  /etc/apt/sources.list.d/jenkins.list > /dev/null
+
+sudo apt update
+sudo apt install jenkins -y
+sudo systemctl start jenkins
+sudo systemctl enable jenkins
+```
+
+> `systemctl enable jenkins` — makes Jenkins start automatically if EC2 reboots.
+
+Check Jenkins is running:
+```bash
+sudo systemctl status jenkins
+```
+
+---
+
+## Step 5: Install Required Tools on EC2
+
+```bash
+# Maven — to run mvn commands
+sudo apt install maven -y
+
+# Docker — to build and push images
+sudo apt install docker.io -y
+sudo usermod -aG docker jenkins
+sudo systemctl restart jenkins
+
+# AWS CLI — to talk to ECR and EKS
+sudo apt install awscli -y
+
+# kubectl — to deploy to EKS
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+```
+
+> `usermod -aG docker jenkins` — adds Jenkins user to the docker group so it can run docker commands.
+> Without this, `docker build` in the pipeline would fail with permission denied.
+
+---
+
+## Step 6: Open Jenkins UI
+
+Open in your browser:
+```
+http://<ec2-public-ip>:8080
+```
+
+Get the unlock password:
+```bash
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+```
+
+Paste it → Install suggested plugins → Create admin user → Done.
+
+---
+
+## Step 7: Attach IAM Role to EC2 (No hardcoded AWS keys)
+
+In production you never store AWS keys inside Jenkins.
+Instead you attach an IAM Role to the EC2 — Jenkins inherits the permissions automatically.
+
+1. Go to AWS Console → IAM → Roles → `Create Role`
+2. Trusted entity: `EC2`
+3. Attach these policies:
+   - `AmazonEC2ContainerRegistryFullAccess`
+   - `AmazonEKSClusterPolicy`
+   - `AmazonEKSWorkerNodePolicy`
+4. Name: `jenkins-ec2-role` → Create
+5. Go to EC2 → select `jenkins-server` → Actions → Security → Modify IAM Role → attach `jenkins-ec2-role`
+
+> Now Jenkins on EC2 can push to ECR and deploy to EKS without any AWS keys stored anywhere.
+> This is the secure production approach — no keys in code, no keys in Jenkins credentials.
+
+---
+
+## Step 8: Add GitHub Webhook
+
+Your Jenkins now has a real public URL:
+```
+http://<ec2-public-ip>:8080/github-webhook/
+```
+
+1. Go to your GitHub repo → Settings → Webhooks → Add webhook
+2. Payload URL: `http://<ec2-public-ip>:8080/github-webhook/`
+3. Content type: `application/json`
+4. Event: `Just the push event`
+5. Click `Add webhook`
+
+You should see a green tick — GitHub can now reach Jenkins directly. No ngrok needed.
+
+---
+
+## Step 9: Create Pipeline Job in Jenkins UI
+
+1. Open `http://<ec2-public-ip>:8080`
+2. New Item → `hello-app-pipeline` → Pipeline → OK
+3. Build Triggers → check `GitHub hook trigger for GITScm polling`
+4. Pipeline → Pipeline script → paste your Jenkinsfile
+5. Save
+
+---
+
+## Step 10: Test the Full Flow
+
+On your Mac:
+```bash
+git add .
+git commit -m "trigger jenkins on ec2"
+git push origin main
+```
+
+Go to `http://<ec2-public-ip>:8080` — build triggers automatically within seconds.
+
+---
+
+## Full Production Flow
+
+```
+Developer pushes code on Mac
+          ↓
+GitHub receives the push
+          ↓
+GitHub webhook hits EC2 public IP directly
+          ↓
+Jenkins on EC2 triggers pipeline automatically
+          ↓
+EC2 uses IAM Role — no keys needed
+          ↓
+mvn build → docker build → push to ECR
+          ↓
+kubectl deploy to EKS
+          ↓
+App live on LoadBalancer URL
+```
+
+---
+
+## Local vs EC2 Comparison
+
+| | Local Mac Jenkins | EC2 Jenkins |
+|---|---|---|
+| Jenkins URL | localhost:8080 | ec2-public-ip:8080 |
+| GitHub webhook works | No | Yes |
+| ngrok needed | Yes | No |
+| AWS keys | Stored in Jenkins | IAM Role — no keys |
+| Always running | No | Yes 24/7 |
+| Team access | Only you | Whole team |
+| Cost | Free | ~$1/day (t2.medium) |
